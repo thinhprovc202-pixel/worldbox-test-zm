@@ -240,6 +240,9 @@ export interface Entity {
   boatId?: string;
   onBoat?: boolean;
   parentId?: string;
+  motherId?: string;
+  fatherId?: string;
+  homeId?: string;
 }
 
 export type BuildingType = 
@@ -248,7 +251,25 @@ export type BuildingType =
   | 'granary' 
   | 'watchtower' 
   | 'farm'
-  | 'docks';
+  | 'docks'
+  | 'windmill'
+  | 'mine'
+  | 'park';
+
+export const BUILDING_LABELS: Record<BuildingType, string> = {
+  town_hall: 'Tòa thị chính',
+  house: 'Nhà ở',
+  granary: 'Kho lương',
+  watchtower: 'Tháp canh',
+  farm: 'Ruộng lúa',
+  docks: 'Bến cảng',
+  windmill: 'Cối xay gió',
+  mine: 'Hầm mỏ',
+  park: 'Công viên',
+};
+
+export const HOUSE_CAPACITY = 4;
+export const WINDMILL_FIELD_RADIUS = 10;
 
 export interface Building {
   id: string;
@@ -275,7 +296,11 @@ export interface Village {
     stone: number;
     food: number;
     gold: number;
+    iron: number;
+    mithril: number;
+    adamantite: number;
   };
+  farmland: { x: number; y: number }[];
   population: number;
   maxPopulation: number;
   buildings: Building[];

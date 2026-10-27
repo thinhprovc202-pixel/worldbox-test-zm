@@ -14,8 +14,22 @@ import {
   Village,
   WorldConfig,
   WorldLaws,
-  TRAIT_DEFINITIONS
+  TRAIT_DEFINITIONS,
+  BUILDING_LABELS,
+  HOUSE_CAPACITY,
+  WINDMILL_FIELD_RADIUS
 } from './types';
+
+const BUILDING_COSTS: Partial<Record<BuildingType, { wood: number; stone: number; health: number }>> = {
+  house: { wood: 15, stone: 10, health: 150 },
+  farm: { wood: 15, stone: 10, health: 120 },
+  watchtower: { wood: 15, stone: 10, health: 250 },
+  windmill: { wood: 25, stone: 15, health: 180 },
+  mine: { wood: 20, stone: 10, health: 220 },
+  park: { wood: 20, stone: 25, health: 160 },
+};
+
+const MAX_FIELDS_PER_WINDMILL = 36;
 import { generateWorldMap, PresetType } from './generator';
 
 // Name banks for kingdoms, villages and people
@@ -450,7 +464,11 @@ export class WorldSimulation {
         stone: 20,
         food: 50,
         gold: 10,
+        iron: 0,
+        mithril: 0,
+        adamantite: 0,
       },
+      farmland: [],
       population: 1,
       maxPopulation: 6,
       buildings: [townHall],
@@ -540,17 +558,31 @@ export class WorldSimulation {
 
   private updateVillages() {
     for (const village of this.villages) {
-      // Passive food from farms
-      const farms = village.buildings.filter(b => b.type === 'farm');
-      village.resources.food += farms.length * 2;
+      this.normalizeVillage(village);
 
-      // Expand village population capacity
-      const houses = village.buildings.filter(b => b.type === 'house');
-      village.maxPopulation = 5 + houses.length * 4;
+      // Passive food from legacy farms and windmill-tended fields
+      const farms = village.buildings.filter(b => b.type === 'farm');
+      this.updateWindmillFields(village);
+      village.resources.food += farms.length * 2 + Math.floor(village.farmland.length / 4);
+
+      this.updateMines(village);
 
       // Check count of alive villagers
       const citizens = this.entities.filter(e => e.ownerVillageId === village.id && e.alive);
       village.population = citizens.length;
+
+      // Housing: the town hall and every house shelter a fixed number of residents
+      village.maxPopulation = this.getHomes(village).length * HOUSE_CAPACITY;
+      this.assignHomes(village, citizens);
+
+      if (village.buildings.some(b => b.type === 'park')) {
+        const park = village.buildings.find(b => b.type === 'park')!;
+        for (const c of citizens) {
+          if (c.health < c.maxHealth && Math.hypot(c.x - park.x, c.y - park.y) <= 6) {
+            c.health = Math.min(c.maxHealth, c.health + 2);
+          }
+        }
+      }
 
       // Village chief succession: hereditary first, otherwise the most skilled citizen
       const leader = citizens.find(e => e.id === village.leaderId);
@@ -558,16 +590,22 @@ export class WorldSimulation {
         const previousLeaderId = village.leaderId;
         const bySkill = (a: Entity, b: Entity) => this.getSkillScore(b) - this.getSkillScore(a);
         const heir = previousLeaderId
-          ? citizens.filter(c => c.parentId === previousLeaderId).sort(bySkill)[0]
+          ? citizens
+              .filter(c => c.parentId === previousLeaderId || c.motherId === previousLeaderId || c.fatherId === previousLeaderId)
+              .sort(bySkill)[0]
           : undefined;
         const successor = heir ?? [...citizens].sort(bySkill)[0];
         this.crownVillageLeader(village, successor, heir ? 'inherit' : 'elect', previousLeaderId);
-      } else if (leader && citizens.length >= 3 && Math.random() < 0.02) {
+      } else if (
+        leader &&
+        citizens.length >= 3 &&
+        Math.random() < (village.buildings.some(b => b.type === 'park') ? 0.008 : 0.02)
+      ) {
         this.attemptCoup(village, leader, citizens);
       }
 
       // Check for building construction if resources allow
-      if (village.resources.wood >= 15 && village.resources.stone >= 10 && village.buildings.length < 15) {
+      if (village.resources.wood >= 15 && village.resources.stone >= 10 && village.buildings.length < 22) {
         this.attemptVillageConstruction(village);
       }
 
@@ -871,7 +909,11 @@ export class WorldSimulation {
         stone: 25,
         food: 60,
         gold: 15,
+        iron: 0,
+        mithril: 0,
+        adamantite: 0,
       },
+      farmland: [],
       population: 1,
       maxPopulation: 6,
       buildings: [townHall],
@@ -1020,22 +1062,34 @@ export class WorldSimulation {
 
   private attemptVillageConstruction(village: Village) {
     let buildType: BuildingType = 'house';
-    const houses = village.buildings.filter(b => b.type === 'house').length;
-    const farms = village.buildings.filter(b => b.type === 'farm').length;
-    const hasDocks = village.buildings.some(b => b.type === 'docks');
+    const count = (type: BuildingType) => village.buildings.filter(b => b.type === type).length;
+    const houses = count('house');
+    const windmills = count('windmill');
+    const mines = count('mine');
+    const hasDocks = count('docks') > 0;
     const isCoastal = this.isCoastalVillage(village);
+    const homesFull = village.population >= village.maxPopulation - 1;
+    const canMine = this.findMineSite(village) !== null;
 
     // Prioritize building a coastal docks if near water to enable naval travel
     if (isCoastal && !hasDocks && village.resources.wood >= 25 && village.resources.stone >= 15) {
       buildType = 'docks';
-    } else if (farms < 2 || village.resources.food < 30) {
-      buildType = 'farm';
-    } else if (houses < 4) {
+    } else if (houses < 1 || (homesFull && houses < 8)) {
       buildType = 'house';
-    } else if (!village.buildings.some(b => b.type === 'watchtower')) {
+    } else if (windmills < 1 || (village.resources.food < 30 && windmills < 3)) {
+      buildType = 'windmill';
+    } else if (canMine && mines < 1) {
+      buildType = 'mine';
+    } else if (count('park') < 1 && village.population >= 6) {
+      buildType = 'park';
+    } else if (count('watchtower') < 1) {
       buildType = 'watchtower';
+    } else if (canMine && mines < 2 && village.population >= 10) {
+      buildType = 'mine';
+    } else if (windmills < 2 && village.population >= 10) {
+      buildType = 'windmill';
     } else {
-      buildType = Math.random() < 0.5 ? 'house' : 'farm';
+      buildType = 'house';
     }
 
     if (buildType === 'docks') {
@@ -1066,28 +1120,160 @@ export class WorldSimulation {
       }
     }
 
-    // Normal building placement on plains
-    const candidateTiles = village.territory.filter(t => {
-      const isOccupied = village.buildings.some(b => b.x === t.x && b.y === t.y);
-      return !isOccupied && this.tiles[t.y][t.x] === 'plains';
-    });
+    const cost = BUILDING_COSTS[buildType] ?? BUILDING_COSTS.house!;
+    if (village.resources.wood < cost.wood || village.resources.stone < cost.stone) return;
 
-    if (candidateTiles.length > 0) {
-      const spot = candidateTiles[Math.floor(Math.random() * candidateTiles.length)];
-      village.resources.wood -= 15;
-      village.resources.stone -= 10;
-      const newBuilding: Building = {
-        id: this.getUniqueId('bld'),
-        villageId: village.id,
-        type: buildType,
-        x: spot.x,
-        y: spot.y,
-        health: buildType === 'watchtower' ? 250 : 150,
-        maxHealth: buildType === 'watchtower' ? 250 : 150,
-        level: 1,
-      };
-      village.buildings.push(newBuilding);
-      this.createSparks(spot.x, spot.y, '#f59e0b', 6);
+    let spot: { x: number; y: number } | null = null;
+    if (buildType === 'mine') {
+      spot = this.findMineSite(village);
+    } else {
+      const candidateTiles = village.territory.filter(t => this.isFreeBuildTile(t.x, t.y));
+      if (candidateTiles.length > 0) {
+        // Houses cluster near the town center; windmills prefer open land farther out
+        candidateTiles.sort((a, b) => {
+          const da = Math.hypot(a.x - village.x, a.y - village.y);
+          const db = Math.hypot(b.x - village.x, b.y - village.y);
+          return buildType === 'windmill' ? db - da : da - db;
+        });
+        const pool = candidateTiles.slice(0, Math.max(3, Math.ceil(candidateTiles.length / 3)));
+        spot = pool[Math.floor(Math.random() * pool.length)];
+      }
+    }
+    if (!spot) return;
+
+    village.resources.wood -= cost.wood;
+    village.resources.stone -= cost.stone;
+    village.buildings.push({
+      id: this.getUniqueId('bld'),
+      villageId: village.id,
+      type: buildType,
+      x: spot.x,
+      y: spot.y,
+      health: cost.health,
+      maxHealth: cost.health,
+      level: 1,
+    });
+    this.createSparks(spot.x, spot.y, '#f59e0b', 6);
+
+    if (buildType === 'windmill' || buildType === 'mine' || buildType === 'park') {
+      const kingdom = this.getKingdom(village.kingdomId);
+      this.addHistoryEvent(
+        `Khánh thành ${BUILDING_LABELS[buildType]}`,
+        `Làng ${village.name} đã xây dựng ${BUILDING_LABELS[buildType].toLowerCase()} mới.`,
+        'kingdom',
+        kingdom?.bannerColor
+      );
+    }
+  }
+
+  private normalizeVillage(village: Village) {
+    village.resources.iron ??= 0;
+    village.resources.mithril ??= 0;
+    village.resources.adamantite ??= 0;
+    village.farmland ??= [];
+  }
+
+  private isFarmland(x: number, y: number): boolean {
+    return this.villages.some(v => v.farmland?.some(f => f.x === x && f.y === y));
+  }
+
+  private isBuildingAt(x: number, y: number): boolean {
+    return this.villages.some(v => v.buildings.some(b => b.x === x && b.y === y));
+  }
+
+  private isFreeBuildTile(x: number, y: number): boolean {
+    return this.tiles[y]?.[x] === 'plains' && !this.isBuildingAt(x, y) && !this.isFarmland(x, y);
+  }
+
+  private getHomes(village: Village): Building[] {
+    return village.buildings.filter(b => b.type === 'house' || b.type === 'town_hall');
+  }
+
+  private assignHomes(village: Village, citizens: Entity[]) {
+    const homes = this.getHomes(village);
+    const occupancy = new Map<string, number>(homes.map(h => [h.id, 0]));
+    for (const c of citizens) {
+      if (c.homeId && occupancy.has(c.homeId) && occupancy.get(c.homeId)! < HOUSE_CAPACITY) {
+        occupancy.set(c.homeId, occupancy.get(c.homeId)! + 1);
+      } else {
+        c.homeId = undefined;
+      }
+    }
+    for (const c of citizens) {
+      if (c.homeId) continue;
+      const free = homes.find(h => occupancy.get(h.id)! < HOUSE_CAPACITY);
+      if (!free) break;
+      c.homeId = free.id;
+      occupancy.set(free.id, occupancy.get(free.id)! + 1);
+    }
+  }
+
+  private updateWindmillFields(village: Village) {
+    const windmills = village.buildings.filter(b => b.type === 'windmill');
+    const inRange = (f: { x: number; y: number }) =>
+      windmills.some(w => Math.hypot(f.x - w.x, f.y - w.y) <= WINDMILL_FIELD_RADIUS);
+
+    // Fields wither when their windmill is destroyed or the land is no longer arable
+    village.farmland = village.farmland.filter(
+      f => this.tiles[f.y]?.[f.x] === 'plains' && inRange(f) && !this.isBuildingAt(f.x, f.y)
+    );
+
+    for (const mill of windmills) {
+      const millFields = village.farmland.filter(
+        f => Math.hypot(f.x - mill.x, f.y - mill.y) <= WINDMILL_FIELD_RADIUS
+      ).length;
+      if (millFields >= MAX_FIELDS_PER_WINDMILL) continue;
+
+      // Plow outward ring by ring so fields grow as a circle around the mill
+      let plowed = 0;
+      for (let r = 1; r <= WINDMILL_FIELD_RADIUS && plowed < 2; r++) {
+        for (let dy = -r; dy <= r && plowed < 2; dy++) {
+          for (let dx = -r; dx <= r && plowed < 2; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            if (Math.hypot(dx, dy) > WINDMILL_FIELD_RADIUS) continue;
+            const fx = mill.x + dx;
+            const fy = mill.y + dy;
+            if (!this.isFreeBuildTile(fx, fy)) continue;
+            village.farmland.push({ x: fx, y: fy });
+            plowed++;
+          }
+        }
+      }
+    }
+  }
+
+  private findMineSite(village: Village): { x: number; y: number } | null {
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    const range = 8;
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dx = -range; dx <= range; dx++) {
+        const x = village.x + dx;
+        const y = village.y + dy;
+        if (this.tiles[y]?.[x] !== 'mountain' || this.isBuildingAt(x, y)) continue;
+        const dist = Math.hypot(dx, dy);
+        if (dist < bestDist) {
+          best = { x, y };
+          bestDist = dist;
+        }
+      }
+    }
+    return best;
+  }
+
+  private updateMines(village: Village) {
+    const mines = village.buildings.filter(b => b.type === 'mine');
+    if (mines.length === 0) return;
+    const species = this.getKingdom(village.kingdomId)?.species;
+    const r = village.resources;
+    for (const mine of mines) {
+      r.iron += 2;
+      r.stone += 1;
+      if (Math.random() < 0.3) r.gold += 1;
+      // Elves treasure mithril; dwarves delve deepest for adamantite
+      if (Math.random() < (species === 'elf' ? 0.25 : 0.06)) r.mithril += 1;
+      if (Math.random() < (species === 'dwarf' ? 0.2 : 0.04)) r.adamantite += 1;
+      if (Math.random() < 0.3) this.createSparks(mine.x, mine.y, '#cbd5e1', 2);
     }
   }
 
@@ -1344,22 +1530,41 @@ export class WorldSimulation {
           this.createSparks(e.x, e.y, '#94a3b8', 2);
         }
 
-        // Reproduction when village is safe and has capacity
+        // Reproduction: a housed adult woman with a nearby adult man, when a home has room
+        const home = e.homeId ? v.buildings.find(b => b.id === e.homeId) : undefined;
         if (
           this.worldLaws.animalBreeding &&
+          e.gender === 'F' &&
+          e.age >= 16 &&
+          e.age <= 45 &&
+          home &&
           v.population < v.maxPopulation &&
           e.hunger > 60 &&
-          Math.random() < 0.008
+          Math.random() < 0.016
         ) {
-          e.state = 'REPRODUCE';
-          const baby = this.spawnEntity(e.species, e.x + (Math.random() * 2 - 1), e.y + (Math.random() * 2 - 1));
-          baby.ownerVillageId = v.id;
-          baby.ownerKingdomId = v.kingdomId;
-          baby.parentId = e.id;
-          baby.age = 1;
-          v.population += 1;
-          this.createPuff(e.x, e.y, '#ec4899', 6);
-          return;
+          const father = this.entities.find(
+            m =>
+              m.alive &&
+              !m.onBoat &&
+              m.gender === 'M' &&
+              m.age >= 16 &&
+              m.ownerVillageId === v.id &&
+              Math.hypot(m.x - e.x, m.y - e.y) <= 6
+          );
+          if (father) {
+            e.state = 'REPRODUCE';
+            const baby = this.spawnEntity(e.species, home.x + (Math.random() - 0.5), home.y + (Math.random() - 0.5));
+            baby.ownerVillageId = v.id;
+            baby.ownerKingdomId = v.kingdomId;
+            baby.parentId = e.id;
+            baby.motherId = e.id;
+            baby.fatherId = father.id;
+            baby.homeId = home.id;
+            baby.age = 1;
+            v.population += 1;
+            this.createPuff(home.x, home.y, '#ec4899', 6);
+            return;
+          }
         }
       }
     }
