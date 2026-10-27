@@ -239,6 +239,7 @@ export interface Entity {
   recruitedAtSpawn?: boolean;
   boatId?: string;
   onBoat?: boolean;
+  parentId?: string;
 }
 
 export type BuildingType = 
@@ -265,6 +266,7 @@ export interface Village {
   kingdomId: string;
   name: string;
   leaderId?: string;
+  leaderSinceYear?: number;
   x: number;
   y: number;
   territory: { x: number; y: number }[];

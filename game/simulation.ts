@@ -13,7 +13,8 @@ import {
   Trait,
   Village,
   WorldConfig,
-  WorldLaws
+  WorldLaws,
+  TRAIT_DEFINITIONS
 } from './types';
 import { generateWorldMap, PresetType } from './generator';
 
@@ -551,16 +552,18 @@ export class WorldSimulation {
       const citizens = this.entities.filter(e => e.ownerVillageId === village.id && e.alive);
       village.population = citizens.length;
 
-      // If leader died, elect a new one
+      // Village chief succession: hereditary first, otherwise the most skilled citizen
       const leader = citizens.find(e => e.id === village.leaderId);
       if (!leader && citizens.length > 0) {
-        citizens.sort((a, b) => b.level - a.level);
-        village.leaderId = citizens[0].id;
-        const kingdom = this.getKingdom(village.kingdomId);
-        if (kingdom && (!kingdom.kingId || !this.entities.find(e => e.id === kingdom.kingId && e.alive))) {
-          kingdom.kingId = citizens[0].id;
-          this.addHistoryEvent('Vua mới lên ngôi', `${citizens[0].name} kế vị ngai vàng của Vương quốc ${kingdom.name}.`, 'kingdom', kingdom.bannerColor);
-        }
+        const previousLeaderId = village.leaderId;
+        const bySkill = (a: Entity, b: Entity) => this.getSkillScore(b) - this.getSkillScore(a);
+        const heir = previousLeaderId
+          ? citizens.filter(c => c.parentId === previousLeaderId).sort(bySkill)[0]
+          : undefined;
+        const successor = heir ?? [...citizens].sort(bySkill)[0];
+        this.crownVillageLeader(village, successor, heir ? 'inherit' : 'elect', previousLeaderId);
+      } else if (leader && citizens.length >= 3 && Math.random() < 0.02) {
+        this.attemptCoup(village, leader, citizens);
       }
 
       // Check for building construction if resources allow
@@ -634,6 +637,98 @@ export class WorldSimulation {
         this.addHistoryEvent('Vương triều sụp đổ', `Vương quốc ${k.name} đã chính thức tan rã vào dĩ vãng.`, 'kingdom', '#6b7280');
         this.kingdoms.splice(i, 1);
       }
+    }
+  }
+
+  public getSkillScore(e: Entity): number {
+    let score = e.level * 10 + e.kills * 4 + e.attackPower + e.defense * 1.5 + e.health / 10;
+    for (const t of e.traits) {
+      const category = TRAIT_DEFINITIONS[t]?.category;
+      if (category === 'positive') score += 8;
+      else if (category === 'negative') score -= 6;
+    }
+    return Math.max(1, score);
+  }
+
+  private crownVillageLeader(
+    village: Village,
+    newLeader: Entity,
+    reason: 'inherit' | 'elect' | 'coup',
+    previousLeaderId?: string
+  ) {
+    village.leaderId = newLeader.id;
+    village.leaderSinceYear = this.year;
+    const kingdom = this.getKingdom(village.kingdomId);
+    const color = kingdom?.bannerColor;
+
+    if (reason === 'inherit') {
+      this.addHistoryEvent(
+        'Cha truyền con nối',
+        `${newLeader.name} kế thừa ngôi trưởng làng ${village.name} từ cha mẹ mình.`,
+        'kingdom',
+        color
+      );
+    } else if (reason === 'elect') {
+      this.addHistoryEvent(
+        'Trưởng làng mới',
+        `Dân làng ${village.name} tôn ${newLeader.name} (Cấp ${newLeader.level}) — người tài giỏi nhất — làm trưởng làng.`,
+        'kingdom',
+        color
+      );
+    }
+
+    if (kingdom) {
+      const kingAlive = kingdom.kingId && this.entities.some(e => e.id === kingdom.kingId && e.alive);
+      if (!kingAlive || kingdom.kingId === previousLeaderId) {
+        kingdom.kingId = newLeader.id;
+        this.addHistoryEvent(
+          'Vua mới lên ngôi',
+          `${newLeader.name} lên ngai vàng của Vương quốc ${kingdom.name}.`,
+          'kingdom',
+          kingdom.bannerColor
+        );
+      }
+    }
+  }
+
+  private attemptCoup(village: Village, leader: Entity, citizens: Entity[]) {
+    const leaderScore = this.getSkillScore(leader);
+    const challenger = citizens
+      .filter(c => c.id !== leader.id && !c.onBoat && c.age >= 16 && !c.traits.includes('Peaceful'))
+      .sort((a, b) => this.getSkillScore(b) - this.getSkillScore(a))[0];
+    if (!challenger) return;
+
+    const challengerScore = this.getSkillScore(challenger);
+    const ambition = challenger.traits.includes('Bloodthirsty') ? 1.1 : 1.3;
+    if (challengerScore < leaderScore * ambition) return;
+    if (Math.random() > 0.35) return;
+
+    const kingdom = this.getKingdom(village.kingdomId);
+    const successChance = challengerScore / (challengerScore + leaderScore);
+
+    if (Math.random() < successChance) {
+      leader.alive = false;
+      leader.health = 0;
+      this.createPuff(leader.x, leader.y, '#dc2626', 10);
+      challenger.kills += 1;
+      this.addHistoryEvent(
+        'Đảo chính thành công',
+        `${challenger.name} lật đổ và hạ sát trưởng làng ${leader.name}, cướp ngôi làng ${village.name}!`,
+        'war',
+        '#dc2626'
+      );
+      this.crownVillageLeader(village, challenger, 'coup', leader.id);
+    } else {
+      challenger.alive = false;
+      challenger.health = 0;
+      this.createPuff(challenger.x, challenger.y, '#dc2626', 10);
+      leader.kills += 1;
+      this.addHistoryEvent(
+        'Đảo chính thất bại',
+        `${challenger.name} mưu phản tại ${village.name} nhưng bị trưởng làng ${leader.name} trấn áp.`,
+        'war',
+        kingdom?.bannerColor
+      );
     }
   }
 
@@ -1260,6 +1355,7 @@ export class WorldSimulation {
           const baby = this.spawnEntity(e.species, e.x + (Math.random() * 2 - 1), e.y + (Math.random() * 2 - 1));
           baby.ownerVillageId = v.id;
           baby.ownerKingdomId = v.kingdomId;
+          baby.parentId = e.id;
           baby.age = 1;
           v.population += 1;
           this.createPuff(e.x, e.y, '#ec4899', 6);

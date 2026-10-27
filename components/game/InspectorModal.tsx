@@ -96,6 +96,12 @@ export const InspectorModal: React.FC<InspectorModalProps> = ({
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-950/80 border border-emerald-700/60 text-emerald-300">
                       <Home className="w-3 h-3" /> Dân làng: {village.name}
                     </span>
+                    {village.leaderId === entity.id && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 border border-amber-500/50 text-amber-300">
+                        <Crown className="w-3 h-3" /> Trưởng làng
+                        {village.leaderSinceYear !== undefined && ` · từ năm ${village.leaderSinceYear}`}
+                      </span>
+                    )}
                     {entity.recruitedAtSpawn && (
                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40" title="Được kết nạp vào làng nhờ quy luật đồng tộc 80%">
                         ✦ Đã kết nạp (80%)

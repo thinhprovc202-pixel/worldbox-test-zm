@@ -476,8 +476,35 @@ export class WorldRenderer {
       }
     }
 
-    // King crown
+    // Village chief banner (WorldBox-style flag above the head)
+    const ledVillage = e.ownerVillageId ? sim.villages.find(v => v.id === e.ownerVillageId && v.leaderId === e.id) : undefined;
     const isKing = sim.kingdoms.some(k => k.kingId === e.id);
+    if (ledVillage) {
+      const flagColor = sim.kingdoms.find(k => k.id === ledVillage.kingdomId)?.bannerColor || '#e2e8f0';
+      const poleX = cx + 5;
+      const poleTop = cy - 30;
+      const wave = Math.sin(Date.now() / 220 + e.x) * 1.5;
+      ctx.fillStyle = '#3f2a14';
+      ctx.fillRect(poleX, poleTop, 2, 22);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(poleX - 1, poleTop - 2, 4, 3);
+      ctx.fillStyle = flagColor;
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(poleX + 2, poleTop + 1);
+      ctx.lineTo(poleX + 15, poleTop + 2 + wave);
+      ctx.lineTo(poleX + 12, poleTop + 6 + wave * 0.5);
+      ctx.lineTo(poleX + 15, poleTop + 10 + wave);
+      ctx.lineTo(poleX + 2, poleTop + 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(poleX + 5, poleTop + 4, 3, 3);
+    }
+
+    // King crown
     if (isKing) {
       ctx.fillStyle = '#facc15';
       ctx.fillRect(cx - 3, cy - 13, 6, 3);
