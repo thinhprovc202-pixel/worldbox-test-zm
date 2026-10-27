@@ -1,0 +1,7 @@
+{
+  "name": "World Simulator - God Sandbox",
+  "description": "A 2D pixel art god simulator and world sandbox inspired by WorldBox with living civilizations, dynamic kingdoms, intelligent AI, diplomacy, and divine powers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
